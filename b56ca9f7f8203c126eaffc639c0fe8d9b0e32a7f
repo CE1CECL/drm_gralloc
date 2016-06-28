@@ -16,6 +16,23 @@
       "revId": "b56ca9f7f8203c126eaffc639c0fe8d9b0e32a7f",
       "serverId": "85c56323-6fa9-3386-8a01-6480fb634889",
       "unresolved": false
+    },
+    {
+      "key": {
+        "uuid": "a0008ff0_5e45d134",
+        "filename": "gralloc_drm.cpp",
+        "patchSetId": 1
+      },
+      "lineNbr": 221,
+      "author": {
+        "id": 1002563
+      },
+      "writtenOn": "2016-06-28T05:38:10Z",
+      "side": 1,
+      "message": "if bo-\u003eimported is true, bo will be decref twice.\nIs this correct?",
+      "revId": "b56ca9f7f8203c126eaffc639c0fe8d9b0e32a7f",
+      "serverId": "85c56323-6fa9-3386-8a01-6480fb634889",
+      "unresolved": false
     }
   ]
 }
