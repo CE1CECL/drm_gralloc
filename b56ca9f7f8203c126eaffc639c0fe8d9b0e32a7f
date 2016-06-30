@@ -19,6 +19,24 @@
     },
     {
       "key": {
+        "uuid": "c072e390_b486a028",
+        "filename": "gralloc_drm.cpp",
+        "patchSetId": 1
+      },
+      "lineNbr": 219,
+      "author": {
+        "id": 1111445
+      },
+      "writtenOn": "2016-06-30T02:00:19Z",
+      "side": 1,
+      "message": "Good idea.",
+      "parentUuid": "a0008ff0_9e25999e",
+      "revId": "b56ca9f7f8203c126eaffc639c0fe8d9b0e32a7f",
+      "serverId": "85c56323-6fa9-3386-8a01-6480fb634889",
+      "unresolved": false
+    },
+    {
+      "key": {
         "uuid": "a0008ff0_5e45d134",
         "filename": "gralloc_drm.cpp",
         "patchSetId": 1
@@ -30,6 +48,24 @@
       "writtenOn": "2016-06-28T05:38:10Z",
       "side": 1,
       "message": "if bo-\u003eimported is true, bo will be decref twice.\nIs this correct?",
+      "revId": "b56ca9f7f8203c126eaffc639c0fe8d9b0e32a7f",
+      "serverId": "85c56323-6fa9-3386-8a01-6480fb634889",
+      "unresolved": false
+    },
+    {
+      "key": {
+        "uuid": "c072e390_14967459",
+        "filename": "gralloc_drm.cpp",
+        "patchSetId": 1
+      },
+      "lineNbr": 221,
+      "author": {
+        "id": 1111445
+      },
+      "writtenOn": "2016-06-30T02:00:19Z",
+      "side": 1,
+      "message": "That is correct,  \n\nif the bo is imported, the bo would have two refcount.\n\nthe first refcount is from validate_handle, the second refcount from handle register.",
+      "parentUuid": "a0008ff0_5e45d134",
       "revId": "b56ca9f7f8203c126eaffc639c0fe8d9b0e32a7f",
       "serverId": "85c56323-6fa9-3386-8a01-6480fb634889",
       "unresolved": false
