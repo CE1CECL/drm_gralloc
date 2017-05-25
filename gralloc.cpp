@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2010-2011 Chia-I Wu <olvaffe@gmail.com>
  * Copyright (C) 2010-2011 LunarG Inc.
+ * Copyright (C) 2016 Linaro, Ltd., Rob Herring <robh@kernel.org>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -21,7 +22,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#define LOG_TAG "GRALLOC-MOD"
+#define LOG_TAG "GRALLOC-GBM"
 
 #include <cutils/log.h>
 #include <stdlib.h>
@@ -29,20 +30,63 @@
 #include <pthread.h>
 #include <errno.h>
 
+#include <hardware/gralloc.h>
+#include <system/graphics.h>
+
+#include <gbm.h>
+
 #include "gralloc_drm.h"
-#include "gralloc_drm_priv.h"
+#include "gralloc_gbm_priv.h"
+
+struct gbm_module_t {
+	gralloc_module_t base;
+
+	pthread_mutex_t mutex;
+	struct gbm_device *gbm;
+};
+
+static inline int gralloc_gbm_get_bpp(int format)
+{
+	int bpp;
+
+	switch (format) {
+	case HAL_PIXEL_FORMAT_RGBA_8888:
+	case HAL_PIXEL_FORMAT_RGBX_8888:
+	case HAL_PIXEL_FORMAT_BGRA_8888:
+		bpp = 4;
+		break;
+	case HAL_PIXEL_FORMAT_RGB_888:
+		bpp = 3;
+		break;
+	case HAL_PIXEL_FORMAT_RGB_565:
+	case HAL_PIXEL_FORMAT_YCbCr_422_I:
+		bpp = 2;
+		break;
+	/* planar; only Y is considered */
+	case HAL_PIXEL_FORMAT_YV12:
+	case HAL_PIXEL_FORMAT_YCbCr_422_SP:
+	case HAL_PIXEL_FORMAT_YCrCb_420_SP:
+		bpp = 1;
+		break;
+	default:
+		bpp = 0;
+		break;
+	}
+
+	return bpp;
+}
 
 /*
  * Initialize the DRM device object
  */
-static int drm_init(struct drm_module_t *dmod)
+static int gbm_init(struct gbm_module_t *dmod)
 {
 	int err = 0;
 
 	pthread_mutex_lock(&dmod->mutex);
-	if (!dmod->drm) {
-		dmod->drm = gralloc_drm_create();
-		if (!dmod->drm)
+	if (!dmod->gbm) {
+		dmod->gbm = gbm_dev_create();
+		if (!dmod->gbm)
 			err = -EINVAL;
 	}
 	pthread_mutex_unlock(&dmod->mutex);
@@ -50,22 +94,29 @@ static int drm_init(struct drm_module_t *dmod)
 	return err;
 }
 
-static int drm_mod_perform(const struct gralloc_module_t *mod, int op, ...)
+static int gbm_mod_perform(const struct gralloc_module_t *mod, int op, ...)
 {
-	struct drm_module_t *dmod = (struct drm_module_t *) mod;
+	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
 	va_list args;
 	int err;
+	uint32_t uop = static_cast<uint32_t>(op);
 
-	err = drm_init(dmod);
+	err = gbm_init(dmod);
 	if (err)
 		return err;
 
 	va_start(args, op);
-	switch (op) {
-	case static_cast<int>(GRALLOC_MODULE_PERFORM_GET_DRM_FD):
+	switch (uop) {
+	case GRALLOC_MODULE_PERFORM_GET_DRM_FD:
 		{
 			int *fd = va_arg(args, int *);
-			*fd = gralloc_drm_get_fd(dmod->drm);
+			*fd = gbm_device_get_fd(dmod->gbm);
+			err = 0;
+		}
+		break;
+	/* TODO: This is a stub and should be implemented fully */
+	case GRALLOC_MODULE_PERFORM_GET_USAGE:
+		{
 			err = 0;
 		}
 		break;
@@ -78,203 +129,201 @@ static int drm_mod_perform(const struct gralloc_module_t *mod, int op, ...)
 	return err;
 }
 
-static int drm_mod_register_buffer(const gralloc_module_t *mod,
+static int gbm_mod_register_buffer(const gralloc_module_t *mod,
 		buffer_handle_t handle)
 {
-	struct drm_module_t *dmod = (struct drm_module_t *) mod;
+	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
 	int err;
 
-	err = drm_init(dmod);
+	err = gbm_init(dmod);
 	if (err)
 		return err;
 
-	return gralloc_drm_handle_register(handle, dmod->drm);
+	pthread_mutex_lock(&dmod->mutex);
+	err = gralloc_gbm_handle_register(handle, dmod->gbm);
+	pthread_mutex_unlock(&dmod->mutex);
+
+	return err;
 }
 
-static int drm_mod_unregister_buffer(const gralloc_module_t *mod,
+static int gbm_mod_unregister_buffer(const gralloc_module_t *mod,
 		buffer_handle_t handle)
 {
-	return gralloc_drm_handle_unregister(handle);
+	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
+	int err;
+
+	pthread_mutex_lock(&dmod->mutex);
+	err = gralloc_gbm_handle_unregister(handle);
+	pthread_mutex_unlock(&dmod->mutex);
+
+	return err;
 }
 
-static int drm_mod_lock(const gralloc_module_t *mod, buffer_handle_t handle,
+static int gbm_mod_lock(const gralloc_module_t *mod, buffer_handle_t handle,
 		int usage, int x, int y, int w, int h, void **ptr)
 {
-	struct gralloc_drm_bo_t *bo;
+	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
+	struct gralloc_gbm_bo_t *bo;
 	int err;
 
-	bo = gralloc_drm_bo_from_handle(handle);
-	if (!bo)
-		return -EINVAL;
+	pthread_mutex_lock(&dmod->mutex);
 
-	return gralloc_drm_bo_lock(bo, usage, x, y, w, h, ptr);
-}
-
-static int drm_mod_lock_ycbcr(const gralloc_module_t *mod, buffer_handle_t bhandle,
-		int usage, int x, int y, int w, int h, struct android_ycbcr *ycbcr)
-{
-	struct gralloc_drm_handle_t *handle;
-	struct gralloc_drm_bo_t *bo;
-	void *ptr;
-	int err;
-
-	bo = gralloc_drm_bo_from_handle(bhandle);
-	if (!bo)
-		return -EINVAL;
-	handle = bo->handle;
-
-	switch(handle->format) {
-	case HAL_PIXEL_FORMAT_YCbCr_420_888:
-		break;
-	default:
-		return -EINVAL;
+	bo = gralloc_gbm_bo_from_handle(handle);
+	if (!bo) {
+		err = -EINVAL;
+		goto unlock;
 	}
 
-	err = gralloc_drm_bo_lock(bo, usage, x, y, w, h, &ptr);
-	if (err)
-		return err;
+	err = gralloc_gbm_bo_lock(bo, usage, x, y, w, h, ptr);
+	ALOGV("buffer %p lock usage = %08x", handle, usage);
 
-	switch(handle->format) {
-	case HAL_PIXEL_FORMAT_YCbCr_420_888:
-		ycbcr->y = ptr;
-		ycbcr->cb = (uint8_t *)ptr + handle->stride * handle->height;
-		ycbcr->cr = (uint8_t *)ycbcr->cb + 1;
-		ycbcr->ystride = handle->stride;
-		ycbcr->cstride = handle->stride;
-		ycbcr->chroma_step = 2;
-		break;
-	default:
-		break;
+unlock:
+	pthread_mutex_unlock(&dmod->mutex);
+	return err;
+}
+
+static int gbm_mod_unlock(const gralloc_module_t *mod, buffer_handle_t handle)
+{
+	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
+	struct gralloc_gbm_bo_t *bo;
+	int err = 0;
+
+	pthread_mutex_lock(&dmod->mutex);
+
+	bo = gralloc_gbm_bo_from_handle(handle);
+	if (!bo) {
+		err = -EINVAL;
+		goto unlock;
 	}
 
-	return 0;
+	gralloc_gbm_bo_unlock(bo);
+
+unlock:
+	pthread_mutex_unlock(&dmod->mutex);
+	return err;
 }
 
-static int drm_mod_unlock(const gralloc_module_t *mod, buffer_handle_t handle)
+static int gbm_mod_close_gpu0(struct hw_device_t *dev)
 {
-	struct drm_module_t *dmod = (struct drm_module_t *) mod;
-	struct gralloc_drm_bo_t *bo;
-
-	bo = gralloc_drm_bo_from_handle(handle);
-	if (!bo)
-		return -EINVAL;
-
-	gralloc_drm_bo_unlock(bo);
-
-	return 0;
-}
-
-static int drm_mod_close_gpu0(struct hw_device_t *dev)
-{
-	struct drm_module_t *dmod = (struct drm_module_t *)dev->module;
+	struct gbm_module_t *dmod = (struct gbm_module_t *)dev->module;
 	struct alloc_device_t *alloc = (struct alloc_device_t *) dev;
 
-	gralloc_drm_destroy(dmod->drm);
+	gbm_dev_destroy(dmod->gbm);
 	delete alloc;
 
 	return 0;
 }
 
-static int drm_mod_free_gpu0(alloc_device_t *dev, buffer_handle_t handle)
+static int gbm_mod_free_gpu0(alloc_device_t *dev, buffer_handle_t handle)
 {
-	struct drm_module_t *dmod = (struct drm_module_t *) dev->common.module;
-	struct gralloc_drm_bo_t *bo;
+	struct gbm_module_t *dmod = (struct gbm_module_t *) dev->common.module;
+	struct gralloc_gbm_bo_t *bo;
+	int err = 0;
 
-	bo = gralloc_drm_bo_from_handle(handle);
-	if (!bo)
-		return -EINVAL;
+	pthread_mutex_lock(&dmod->mutex);
 
-	gralloc_drm_bo_decref(bo);
+	bo = gralloc_gbm_bo_from_handle(handle);
+	if (!bo) {
+		err = -EINVAL;
+		goto unlock;
+	}
 
-	return 0;
+	gralloc_gbm_bo_decref(bo);
+
+unlock:
+	pthread_mutex_unlock(&dmod->mutex);
+	return err;
 }
 
-static int drm_mod_alloc_gpu0(alloc_device_t *dev,
+static int gbm_mod_alloc_gpu0(alloc_device_t *dev,
 		int w, int h, int format, int usage,
 		buffer_handle_t *handle, int *stride)
 {
-	struct drm_module_t *dmod = (struct drm_module_t *) dev->common.module;
-	struct gralloc_drm_bo_t *bo;
-	int size, bpp, err;
+	struct gbm_module_t *dmod = (struct gbm_module_t *) dev->common.module;
+	struct gralloc_gbm_bo_t *bo;
+	int err = 0;
 
-	bpp = gralloc_drm_get_bpp(format);
-	if (!bpp)
-		return -EINVAL;
+	pthread_mutex_lock(&dmod->mutex);
 
-	bo = gralloc_drm_bo_create(dmod->drm, w, h, format, usage);
-	if (!bo)
-		return -ENOMEM;
+	bo = gralloc_gbm_bo_create(dmod->gbm, w, h, format, usage);
+	if (!bo) {
+		err = -errno;
+		goto unlock;
+	}
 
-	*handle = gralloc_drm_bo_get_handle(bo, stride);
+	*handle = gralloc_gbm_bo_get_handle(bo);
 	/* in pixels */
-	*stride /= bpp;
+	*stride = gbm_bo_get_stride(gralloc_gbm_bo_to_gbm_bo(bo)) /
+		gralloc_gbm_get_bpp(format);
 
-	return 0;
+	ALOGV("buffer %p usage = %08x", *handle, usage);
+unlock:
+	pthread_mutex_unlock(&dmod->mutex);
+	return err;
 }
 
-static int drm_mod_open_gpu0(struct drm_module_t *dmod, hw_device_t **dev)
+static int gbm_mod_open_gpu0(struct gbm_module_t *dmod, hw_device_t **dev)
 {
 	struct alloc_device_t *alloc;
 	int err;
 
-	err = drm_init(dmod);
+	err = gbm_init(dmod);
 	if (err)
 		return err;
 
-	alloc = new alloc_device_t;
+	alloc = new alloc_device_t();
 	if (!alloc)
 		return -EINVAL;
 
 	alloc->common.tag = HARDWARE_DEVICE_TAG;
 	alloc->common.version = 0;
 	alloc->common.module = &dmod->base.common;
-	alloc->common.close = drm_mod_close_gpu0;
+	alloc->common.close = gbm_mod_close_gpu0;
 
-	alloc->alloc = drm_mod_alloc_gpu0;
-	alloc->free = drm_mod_free_gpu0;
+	alloc->alloc = gbm_mod_alloc_gpu0;
+	alloc->free = gbm_mod_free_gpu0;
 
 	*dev = &alloc->common;
 
 	return 0;
 }
 
-static int drm_mod_open(const struct hw_module_t *mod,
+static int gbm_mod_open(const struct hw_module_t *mod,
 		const char *name, struct hw_device_t **dev)
 {
-	struct drm_module_t *dmod = (struct drm_module_t *) mod;
+	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
 	int err;
 
 	if (strcmp(name, GRALLOC_HARDWARE_GPU0) == 0)
-		err = drm_mod_open_gpu0(dmod, dev);
+		err = gbm_mod_open_gpu0(dmod, dev);
 	else
 		err = -EINVAL;
 
 	return err;
 }
 
-static struct hw_module_methods_t drm_mod_methods = {
-	.open = drm_mod_open
+static struct hw_module_methods_t gbm_mod_methods = {
+	.open = gbm_mod_open
 };
 
-struct drm_module_t HAL_MODULE_INFO_SYM = {
+struct gbm_module_t HAL_MODULE_INFO_SYM = {
 	.base = {
 		.common = {
 			.tag = HARDWARE_MODULE_TAG,
 			.version_major = 1,
 			.version_minor = 0,
 			.id = GRALLOC_HARDWARE_MODULE_ID,
-			.name = "DRM Memory Allocator",
-			.author = "Chia-I Wu",
-			.methods = &drm_mod_methods
+			.name = "GBM Memory Allocator",
+			.author = "Rob Herring - Linaro",
+			.methods = &gbm_mod_methods
 		},
-		.registerBuffer = drm_mod_register_buffer,
-		.unregisterBuffer = drm_mod_unregister_buffer,
-		.lock = drm_mod_lock,
-		.unlock = drm_mod_unlock,
-		.perform = drm_mod_perform,
-		.lock_ycbcr = drm_mod_lock_ycbcr,
+		.registerBuffer = gbm_mod_register_buffer,
+		.unregisterBuffer = gbm_mod_unregister_buffer,
+		.lock = gbm_mod_lock,
+		.unlock = gbm_mod_unlock,
+		.perform = gbm_mod_perform
 	},
 
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
-	.drm = NULL
+	.gbm = NULL,
 };
