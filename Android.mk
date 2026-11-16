@@ -21,7 +21,7 @@
 
 # Android.mk for drm_gralloc
 
-DRM_GPU_DRIVERS := $(strip $(filter-out swrast, $(BOARD_GPU_DRIVERS)))
+DRM_GPU_DRIVERS := $(strip $(BOARD_GPU_DRIVERS))
 
 intel_drivers := i915 i965 i915g ilo
 radeon_drivers := r300g r600g
@@ -31,6 +31,7 @@ vmwgfx_drivers := vmwgfx
 
 valid_drivers := \
 	prebuilt \
+	swrast \
 	$(intel_drivers) \
 	$(radeon_drivers) \
 	$(rockchip_drivers) \
